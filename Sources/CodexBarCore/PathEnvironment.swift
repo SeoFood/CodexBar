@@ -43,7 +43,7 @@ public enum BinaryLocator {
         aliasResolver: (String, String?, TimeInterval, FileManager, String) -> String? = ShellCommandLocator
             .resolveAlias,
         fileManager: FileManager = .default,
-        home: String = NSHomeDirectory()) -> String?
+        home: String = PlatformPaths.homeDirectory.path) -> String?
     {
         self.resolveBinary(
             name: "claude",
@@ -63,7 +63,7 @@ public enum BinaryLocator {
         aliasResolver: (String, String?, TimeInterval, FileManager, String) -> String? = ShellCommandLocator
             .resolveAlias,
         fileManager: FileManager = .default,
-        home: String = NSHomeDirectory()) -> String?
+        home: String = PlatformPaths.homeDirectory.path) -> String?
     {
         self.resolveBinary(
             name: "codex",
@@ -83,7 +83,7 @@ public enum BinaryLocator {
         aliasResolver: (String, String?, TimeInterval, FileManager, String) -> String? = ShellCommandLocator
             .resolveAlias,
         fileManager: FileManager = .default,
-        home: String = NSHomeDirectory()) -> String?
+        home: String = PlatformPaths.homeDirectory.path) -> String?
     {
         self.resolveBinary(
             name: "gemini",
@@ -103,7 +103,7 @@ public enum BinaryLocator {
         aliasResolver: (String, String?, TimeInterval, FileManager, String) -> String? = ShellCommandLocator
             .resolveAlias,
         fileManager: FileManager = .default,
-        home: String = NSHomeDirectory()) -> String?
+        home: String = PlatformPaths.homeDirectory.path) -> String?
     {
         self.resolveBinary(
             name: "auggie",
@@ -144,7 +144,7 @@ public enum BinaryLocator {
         if let existingPATH = env["PATH"],
            let pathHit = self.find(
                name,
-               in: existingPATH.split(separator: ":").map(String.init),
+               in: existingPATH.split(separator: PlatformPaths.pathSeparator).map(String.init),
                fileManager: fileManager)
         {
             return pathHit
@@ -165,7 +165,7 @@ public enum BinaryLocator {
         }
 
         // 5) Minimal fallback
-        let fallback = ["/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+        let fallback = PlatformPaths.standardBinaryPaths
         if let pathHit = self.find(name, in: fallback, fileManager: fileManager) {
             return pathHit
         }
@@ -175,9 +175,17 @@ public enum BinaryLocator {
 
     private static func find(_ binary: String, in paths: [String], fileManager: FileManager) -> String? {
         for path in paths where !path.isEmpty {
-            let candidate = "\(path.hasSuffix("/") ? String(path.dropLast()) : path)/\(binary)"
-            if fileManager.isExecutableFile(atPath: candidate) {
-                return candidate
+            // Normalize path separator
+            let normalizedPath = path.hasSuffix("/") || path.hasSuffix("\\")
+                ? String(path.dropLast())
+                : path
+
+            // Try with each executable extension (on Windows: .exe, .cmd, .bat, .ps1; on Unix: just empty)
+            for ext in PlatformPaths.executableExtensions {
+                let candidate = "\(normalizedPath)\(PlatformPaths.pathComponentSeparator)\(binary)\(ext)"
+                if fileManager.isExecutableFile(atPath: candidate) {
+                    return candidate
+                }
             }
         }
         return nil
@@ -233,6 +241,11 @@ public enum ShellCommandLocator {
     }
 
     private static func runShellCapture(_ shell: String?, _ timeout: TimeInterval, _ command: String) -> String? {
+        #if os(Windows)
+        // Windows does not use Unix-style login shell PATH capture
+        _ = (shell, timeout, command)
+        return nil
+        #else
         let shellPath = (shell?.isEmpty == false) ? shell! : "/bin/zsh"
         let isCI = ["1", "true"].contains(ProcessInfo.processInfo.environment["CI"]?.lowercased())
         let process = Process()
@@ -261,6 +274,7 @@ public enum ShellCommandLocator {
 
         let data = stdout.fileHandleForReading.readDataToEndOfFile()
         return String(data: data, encoding: .utf8)
+        #endif
     }
 
     private static func parseAliasPath(
@@ -325,7 +339,7 @@ public enum PathBuilder {
         purposes _: Set<PathPurpose>,
         env: [String: String] = ProcessInfo.processInfo.environment,
         loginPATH: [String]? = LoginShellPathCache.shared.current,
-        home _: String = NSHomeDirectory()) -> String
+        home _: String = PlatformPaths.homeDirectory.path) -> String
     {
         var parts: [String] = []
 
@@ -334,11 +348,11 @@ public enum PathBuilder {
         }
 
         if let existing = env["PATH"], !existing.isEmpty {
-            parts.append(contentsOf: existing.split(separator: ":").map(String.init))
+            parts.append(contentsOf: existing.split(separator: PlatformPaths.pathSeparator).map(String.init))
         }
 
         if parts.isEmpty {
-            parts.append(contentsOf: ["/usr/bin", "/bin", "/usr/sbin", "/sbin"])
+            parts.append(contentsOf: PlatformPaths.standardBinaryPaths)
         }
 
         var seen = Set<String>()
@@ -350,13 +364,13 @@ public enum PathBuilder {
             return nil
         }
 
-        return deduped.joined(separator: ":")
+        return deduped.joined(separator: PlatformPaths.pathSeparatorString)
     }
 
     public static func debugSnapshot(
         purposes: Set<PathPurpose>,
         env: [String: String] = ProcessInfo.processInfo.environment,
-        home: String = NSHomeDirectory()) -> PathDebugSnapshot
+        home: String = PlatformPaths.homeDirectory.path) -> PathDebugSnapshot
     {
         let login = LoginShellPathCache.shared.current
         let effective = self.effectivePATH(
@@ -367,7 +381,7 @@ public enum PathBuilder {
         let codex = BinaryLocator.resolveCodexBinary(env: env, loginPATH: login, home: home)
         let claude = BinaryLocator.resolveClaudeBinary(env: env, loginPATH: login, home: home)
         let gemini = BinaryLocator.resolveGeminiBinary(env: env, loginPATH: login, home: home)
-        let loginString = login?.joined(separator: ":")
+        let loginString = login?.joined(separator: PlatformPaths.pathSeparatorString)
         return PathDebugSnapshot(
             codexBinary: codex,
             claudeBinary: claude,
@@ -379,7 +393,7 @@ public enum PathBuilder {
     public static func debugSnapshotAsync(
         purposes: Set<PathPurpose>,
         env: [String: String] = ProcessInfo.processInfo.environment,
-        home: String = NSHomeDirectory()) async -> PathDebugSnapshot
+        home: String = PlatformPaths.homeDirectory.path) async -> PathDebugSnapshot
     {
         await Task.detached(priority: .userInitiated) {
             self.debugSnapshot(purposes: purposes, env: env, home: home)
@@ -392,6 +406,11 @@ enum LoginShellPathCapturer {
         shell: String? = ProcessInfo.processInfo.environment["SHELL"],
         timeout: TimeInterval = 2.0) -> [String]?
     {
+        #if os(Windows)
+        // Windows does not use Unix-style login shell PATH capture
+        _ = (shell, timeout)
+        return nil
+        #else
         let shellPath = (shell?.isEmpty == false) ? shell! : "/bin/zsh"
         let isCI = ["1", "true"].contains(ProcessInfo.processInfo.environment["CI"]?.lowercased())
         let marker = "__CODEXBAR_PATH__"
@@ -436,7 +455,8 @@ enum LoginShellPathCapturer {
 
         let value = extracted.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { return nil }
-        return value.split(separator: ":").map(String.init)
+        return value.split(separator: PlatformPaths.pathSeparator).map(String.init)
+        #endif
     }
 }
 

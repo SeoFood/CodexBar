@@ -3,6 +3,7 @@ import CompilerPluginSupport
 import Foundation
 import PackageDescription
 
+// SweetCookieKit is macOS-only (browser cookie extraction)
 let sweetCookieKitPath = "../SweetCookieKit"
 let useLocalSweetCookieKit =
     ProcessInfo.processInfo.environment["CODEXBAR_USE_LOCAL_SWEETCOOKIEKIT"] == "1"
@@ -11,28 +12,45 @@ let sweetCookieKitDependency: Package.Dependency =
     ? .package(path: sweetCookieKitPath)
     : .package(url: "https://github.com/steipete/SweetCookieKit", from: "0.2.1")
 
+// Windows build flag - set CODEXBAR_WINDOWS_BUILD=1 to exclude macOS-only dependencies
+let isWindowsBuild = ProcessInfo.processInfo.environment["CODEXBAR_WINDOWS_BUILD"] == "1"
+
 let package = Package(
     name: "CodexBar",
     platforms: [
         .macOS(.v14),
     ],
-    dependencies: [
-        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.8.1"),
-        .package(url: "https://github.com/steipete/Commander", from: "0.2.0"),
-        .package(url: "https://github.com/apple/swift-log", from: "1.8.0"),
-        .package(url: "https://github.com/apple/swift-syntax", from: "600.0.0"),
-        .package(url: "https://github.com/sindresorhus/KeyboardShortcuts", from: "1.10.0"),
-        sweetCookieKitDependency,
-    ],
+    dependencies: {
+        var deps: [Package.Dependency] = [
+            .package(url: "https://github.com/steipete/Commander", from: "0.2.0"),
+            .package(url: "https://github.com/apple/swift-log", from: "1.8.0"),
+            .package(url: "https://github.com/apple/swift-syntax", from: "600.0.0"),
+        ]
+        // macOS-only dependencies
+        if !isWindowsBuild {
+            deps.append(contentsOf: [
+                .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.8.1"),
+                .package(url: "https://github.com/sindresorhus/KeyboardShortcuts", from: "1.10.0"),
+                sweetCookieKitDependency,
+            ])
+        }
+        return deps
+    }(),
     targets: {
         var targets: [Target] = [
             .target(
                 name: "CodexBarCore",
-                dependencies: [
-                    "CodexBarMacroSupport",
-                    .product(name: "Logging", package: "swift-log"),
-                    .product(name: "SweetCookieKit", package: "SweetCookieKit"),
-                ],
+                dependencies: {
+                    var deps: [Target.Dependency] = [
+                        "CodexBarMacroSupport",
+                        .product(name: "Logging", package: "swift-log"),
+                    ]
+                    // SweetCookieKit is macOS-only (browser cookie extraction)
+                    if !isWindowsBuild {
+                        deps.append(.product(name: "SweetCookieKit", package: "SweetCookieKit"))
+                    }
+                    return deps
+                }(),
                 swiftSettings: [
                     .enableUpcomingFeature("StrictConcurrency"),
                 ]),
@@ -62,6 +80,14 @@ let package = Package(
                 name: "CodexBarLinuxTests",
                 dependencies: ["CodexBarCore", "CodexBarCLI"],
                 path: "TestsLinux",
+                swiftSettings: [
+                    .enableUpcomingFeature("StrictConcurrency"),
+                    .enableExperimentalFeature("SwiftTesting"),
+                ]),
+            .testTarget(
+                name: "CodexBarWindowsTests",
+                dependencies: ["CodexBarCore", "CodexBarCLI"],
+                path: "TestsWindows",
                 swiftSettings: [
                     .enableUpcomingFeature("StrictConcurrency"),
                     .enableExperimentalFeature("SwiftTesting"),
