@@ -94,16 +94,16 @@ extension CodexBarCLI {
             }
         }
 
-        // On non-macOS platforms, automatically fall back from web/auto to cli
-        // since browser cookie extraction is not available
-        #if os(macOS)
+        // On macOS and Windows, web/auto source modes are supported via browser cookies
+        // On Linux and other platforms, fall back to cli mode
+        #if os(macOS) || os(Windows)
         let effectiveSourceMode = parsedSourceMode
         #else
         let effectiveSourceMode: ProviderSourceMode?
         if parsedSourceMode?.usesWeb == true {
             effectiveSourceMode = .cli
             if verbose {
-                Self.writeStderr("Note: --source \(parsedSourceMode?.rawValue ?? "auto") not available on Windows, using cli\n")
+                Self.writeStderr("Note: --source \(parsedSourceMode?.rawValue ?? "auto") not available on this platform, using cli\n")
             }
         } else {
             effectiveSourceMode = parsedSourceMode
@@ -248,8 +248,9 @@ extension CodexBarCLI {
             provider: provider,
             account: account)
 
-        // On non-macOS, fall back to cli if web/auto is selected
-        #if os(macOS)
+        // On macOS and Windows, web/auto source modes are supported
+        // On Linux and other platforms, fall back to cli mode
+        #if os(macOS) || os(Windows)
         let resolvedSourceMode = effectiveSourceMode
         #else
         let resolvedSourceMode: ProviderSourceMode

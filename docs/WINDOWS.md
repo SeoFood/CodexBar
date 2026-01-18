@@ -87,24 +87,44 @@ Windows does not support Unix pseudo-terminals (PTY). The following features are
 
 - **TTY-based CLI interaction**: `TTYCommandRunner` throws `notSupportedOnWindows`
 - **Claude CLI session capture**: `ClaudeCLISession` throws `notSupportedOnWindows`
-- **Browser cookie extraction**: `SweetCookieKit` is macOS-only
+
+### Browser Cookie Extraction (Partial)
+
+Windows cookie extraction infrastructure is in place but requires SQLite support:
+
+- **DPAPI decryption**: Implemented using Windows `CryptUnprotectData`
+- **AES-256-GCM decryption**: Implemented using Windows BCrypt API
+- **Cookie database reading**: Requires SQLite linking (planned for future release)
+
+Currently, automatic cookie extraction is not functional. Use manual cookie input instead.
 
 ### What Works
 
 - HTTP-based API fetching (Claude API, Codex API, etc.)
 - OAuth token-based authentication
 - API key authentication
+- Manual cookie input (paste sessionKey from browser dev tools)
 - Configuration management
 - JSON output
 
 ### Recommended Workflow
 
-On Windows, use API-based authentication methods:
+On Windows, use one of these authentication methods:
 
-1. **API Keys**: Set environment variables or use `config.json`
-2. **OAuth Tokens**: Configure tokens in `%APPDATA%\CodexBar\config.json`
+#### Option 1: Manual Cookie Input (for Claude)
 
-Example config:
+1. Open https://claude.ai in your browser
+2. Open Developer Tools (F12) → Application → Cookies
+3. Copy the `sessionKey` value
+4. Pass it to the CLI:
+   ```powershell
+   .\CodexBarCLI.exe usage --provider claude --cookie "sessionKey=sk-ant-..."
+   ```
+
+#### Option 2: API Keys
+
+Set environment variables or use `config.json`:
+
 ```json
 {
   "tokenAccounts": [
@@ -116,6 +136,10 @@ Example config:
   ]
 }
 ```
+
+#### Option 3: OAuth Tokens
+
+Configure OAuth tokens in `%APPDATA%\CodexBar\config.json`
 
 ## Running Tests
 
@@ -161,6 +185,16 @@ The codebase uses conditional compilation for platform-specific code:
 Key files:
 - `Sources/CodexBarCore/Platform/Platform.swift` - Platform enum
 - `Sources/CodexBarCore/Platform/PlatformPaths.swift` - Cross-platform paths
+- `Sources/CodexBarCore/Platform/WindowsCrypto.swift` - DPAPI and AES-GCM decryption
+- `Sources/CodexBarCore/Platform/WindowsBrowserCookie.swift` - Browser cookie extraction
+- `Sources/CodexBarCore/BrowserCookieImportOrder.swift` - Browser enum with Windows cases
+
+### Windows-Specific Implementations
+
+- `WindowsDPAPI` - DPAPI decryption using `CryptUnprotectData`
+- `WindowsAESGCM` - AES-256-GCM decryption using BCrypt API
+- `WindowsBrowserCookieClient` - Chromium cookie extraction (partial)
+- `BrowserDetection` (Windows) - Detects installed Chromium browsers
 
 ### Windows Stubs
 

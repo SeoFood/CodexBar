@@ -125,6 +125,16 @@ public enum ClaudeWebAPIFetcher {
         public let bodyPreview: String?
     }
 
+    public struct WebAccountInfo: Sendable {
+        public let email: String?
+        public let loginMethod: String?
+
+        public init(email: String?, loginMethod: String?) {
+            self.email = email
+            self.loginMethod = loginMethod
+        }
+    }
+
     // MARK: - Public API
 
     #if os(macOS)
@@ -629,16 +639,6 @@ public enum ClaudeWebAPIFetcher {
         return OrganizationInfo(id: selected.uuid, name: sanitized)
     }
 
-    public struct WebAccountInfo: Sendable {
-        public let email: String?
-        public let loginMethod: String?
-
-        public init(email: String?, loginMethod: String?) {
-            self.email = email
-            self.loginMethod = loginMethod
-        }
-    }
-
     private struct AccountResponse: Decodable {
         let emailAddress: String?
         let memberships: [Membership]?
@@ -836,7 +836,491 @@ public enum ClaudeWebAPIFetcher {
         return results
     }
 
+    #elseif os(Windows)
+
+    // MARK: - Windows Implementation
+
+    private static let windowsCookieClient = WindowsBrowserCookieClient()
+
+    /// Attempts to fetch Claude usage data using cookies extracted from browsers on Windows.
+    public static func fetchUsage(
+        browserDetection: BrowserDetection,
+        logger: ((String) -> Void)? = nil) async throws -> WebUsageData
+    {
+        let log: (String) -> Void = { msg in logger?("[claude-web] \(msg)") }
+
+        // Try cached cookie header first
+        if let cached = CookieHeaderCache.load(provider: .claude),
+           !cached.cookieHeader.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        {
+            log("Using cached cookie header from \(cached.sourceLabel)")
+            do {
+                return try await self.fetchUsage(cookieHeader: cached.cookieHeader, logger: log)
+            } catch let error as FetchError {
+                switch error {
+                case .unauthorized, .noSessionKeyFound, .invalidSessionKey:
+                    CookieHeaderCache.clear(provider: .claude)
+                default:
+                    throw error
+                }
+            }
+        }
+
+        // Try extracting from Windows browsers
+        let sessionInfo = try extractWindowsSessionKeyInfo(logger: log)
+        log("Found session key: \(sessionInfo.key.prefix(20))...")
+
+        let usage = try await self.fetchUsageWithSessionKey(sessionKey: sessionInfo.key, logger: log)
+        CookieHeaderCache.store(
+            provider: .claude,
+            cookieHeader: "sessionKey=\(sessionInfo.key)",
+            sourceLabel: sessionInfo.sourceLabel)
+        return usage
+    }
+
+    public static func fetchUsage(
+        cookieHeader: String,
+        logger: ((String) -> Void)? = nil) async throws -> WebUsageData
+    {
+        let log: (String) -> Void = { msg in logger?("[claude-web] \(msg)") }
+        let sessionInfo = try self.sessionKeyInfo(cookieHeader: cookieHeader)
+        log("Using manual session key (\(sessionInfo.cookieCount) cookies)")
+        return try await self.fetchUsageWithSessionKey(sessionKey: sessionInfo.key, logger: log)
+    }
+
+    public static func fetchUsage(
+        using sessionKeyInfo: SessionKeyInfo,
+        logger: ((String) -> Void)? = nil) async throws -> WebUsageData
+    {
+        let log: (String) -> Void = { msg in logger?(msg) }
+        return try await self.fetchUsageWithSessionKey(sessionKey: sessionKeyInfo.key, logger: log)
+    }
+
+    /// Core fetch logic shared between macOS and Windows.
+    private static func fetchUsageWithSessionKey(
+        sessionKey: String,
+        logger: ((String) -> Void)?) async throws -> WebUsageData
+    {
+        let log: (String) -> Void = { msg in logger?(msg) }
+
+        // Fetch organization info
+        let organization = try await fetchOrganizationInfo(sessionKey: sessionKey, logger: log)
+        log("Organization ID: \(organization.id)")
+        if let name = organization.name { log("Organization name: \(name)") }
+
+        var usage = try await fetchUsageData(orgId: organization.id, sessionKey: sessionKey, logger: log)
+        if usage.extraUsageCost == nil,
+           let extra = await fetchExtraUsageCost(orgId: organization.id, sessionKey: sessionKey, logger: log)
+        {
+            usage = WebUsageData(
+                sessionPercentUsed: usage.sessionPercentUsed,
+                sessionResetsAt: usage.sessionResetsAt,
+                weeklyPercentUsed: usage.weeklyPercentUsed,
+                weeklyResetsAt: usage.weeklyResetsAt,
+                opusPercentUsed: usage.opusPercentUsed,
+                extraUsageCost: extra,
+                accountOrganization: usage.accountOrganization,
+                accountEmail: usage.accountEmail,
+                loginMethod: usage.loginMethod)
+        }
+        if let account = await fetchAccountInfo(sessionKey: sessionKey, orgId: organization.id, logger: log) {
+            usage = WebUsageData(
+                sessionPercentUsed: usage.sessionPercentUsed,
+                sessionResetsAt: usage.sessionResetsAt,
+                weeklyPercentUsed: usage.weeklyPercentUsed,
+                weeklyResetsAt: usage.weeklyResetsAt,
+                opusPercentUsed: usage.opusPercentUsed,
+                extraUsageCost: usage.extraUsageCost,
+                accountOrganization: usage.accountOrganization,
+                accountEmail: account.email,
+                loginMethod: account.loginMethod)
+        }
+        if usage.accountOrganization == nil, let name = organization.name {
+            usage = WebUsageData(
+                sessionPercentUsed: usage.sessionPercentUsed,
+                sessionResetsAt: usage.sessionResetsAt,
+                weeklyPercentUsed: usage.weeklyPercentUsed,
+                weeklyResetsAt: usage.weeklyResetsAt,
+                opusPercentUsed: usage.opusPercentUsed,
+                extraUsageCost: usage.extraUsageCost,
+                accountOrganization: name,
+                accountEmail: usage.accountEmail,
+                loginMethod: usage.loginMethod)
+        }
+        return usage
+    }
+
+    public static func probeEndpoints(
+        _ endpoints: [String],
+        browserDetection: BrowserDetection,
+        includePreview: Bool = false,
+        logger: ((String) -> Void)? = nil) async throws -> [ProbeResult]
+    {
+        throw FetchError.notSupportedOnThisPlatform
+    }
+
+    public static func hasSessionKey(browserDetection: BrowserDetection, logger: ((String) -> Void)? = nil) -> Bool {
+        if let cached = CookieHeaderCache.load(provider: .claude),
+           self.hasSessionKey(cookieHeader: cached.cookieHeader)
+        {
+            return true
+        }
+        do {
+            _ = try self.extractWindowsSessionKeyInfo(logger: logger)
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    public static func hasSessionKey(cookieHeader: String?) -> Bool {
+        guard let cookieHeader else { return false }
+        return (try? self.sessionKeyInfo(cookieHeader: cookieHeader)) != nil
+    }
+
+    public static func sessionKeyInfo(
+        browserDetection: BrowserDetection,
+        logger: ((String) -> Void)? = nil) throws -> SessionKeyInfo
+    {
+        try self.extractWindowsSessionKeyInfo(logger: logger)
+    }
+
+    public static func sessionKeyInfo(cookieHeader: String) throws -> SessionKeyInfo {
+        let pairs = CookieHeaderNormalizer.pairs(from: cookieHeader)
+        if let sessionKey = self.findSessionKey(in: pairs) {
+            return SessionKeyInfo(
+                key: sessionKey,
+                sourceLabel: "Manual",
+                cookieCount: pairs.count)
+        }
+        throw FetchError.noSessionKeyFound
+    }
+
+    private static func findSessionKey(in cookies: [(name: String, value: String)]) -> String? {
+        for cookie in cookies where cookie.name == "sessionKey" {
+            let value = cookie.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if value.hasPrefix("sk-ant-") {
+                return value
+            }
+        }
+        return nil
+    }
+
+    /// Extracts session key from Windows browsers.
+    private static func extractWindowsSessionKeyInfo(logger: ((String) -> Void)?) throws -> SessionKeyInfo {
+        let log: (String) -> Void = { msg in logger?(msg) }
+
+        let installedBrowsers = windowsCookieClient.installedBrowsers()
+        log("Found \(installedBrowsers.count) installed browser(s)")
+
+        for browser in installedBrowsers {
+            do {
+                let storeRecords = try windowsCookieClient.extractCookies(
+                    from: browser,
+                    domains: ["claude.ai"],
+                    logger: log
+                )
+
+                for store in storeRecords {
+                    if let sessionKey = findSessionKey(in: store.records.map { ($0.name, $0.value) }) {
+                        log("Found sessionKey in \(store.label)")
+                        return SessionKeyInfo(
+                            key: sessionKey,
+                            sourceLabel: store.label,
+                            cookieCount: store.records.count)
+                    }
+                }
+            } catch let error as WindowsCookieError {
+                switch error {
+                case .appBoundEncryption:
+                    log("\(browser.displayName): App-Bound Encryption - skipping")
+                default:
+                    log("\(browser.displayName) cookie load failed: \(error.localizedDescription)")
+                }
+            } catch {
+                log("\(browser.displayName) cookie load failed: \(error.localizedDescription)")
+            }
+        }
+
+        throw FetchError.noSessionKeyFound
+    }
+
+    // MARK: - Windows API calls (shared implementation)
+
+    private static func fetchOrganizationInfo(
+        sessionKey: String,
+        logger: ((String) -> Void)? = nil) async throws -> OrganizationInfo
+    {
+        let url = URL(string: "\(baseURL)/organizations")!
+        var request = URLRequest(url: url)
+        request.setValue("sessionKey=\(sessionKey)", forHTTPHeaderField: "Cookie")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpMethod = "GET"
+        request.timeoutInterval = 15
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw FetchError.invalidResponse
+        }
+
+        logger?("Organizations API status: \(httpResponse.statusCode)")
+
+        switch httpResponse.statusCode {
+        case 200:
+            return try self.parseOrganizationResponseWindows(data)
+        case 401, 403:
+            throw FetchError.unauthorized
+        default:
+            throw FetchError.serverError(statusCode: httpResponse.statusCode)
+        }
+    }
+
+    private static func fetchUsageData(
+        orgId: String,
+        sessionKey: String,
+        logger: ((String) -> Void)? = nil) async throws -> WebUsageData
+    {
+        let url = URL(string: "\(baseURL)/organizations/\(orgId)/usage")!
+        var request = URLRequest(url: url)
+        request.setValue("sessionKey=\(sessionKey)", forHTTPHeaderField: "Cookie")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpMethod = "GET"
+        request.timeoutInterval = 15
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw FetchError.invalidResponse
+        }
+
+        logger?("Usage API status: \(httpResponse.statusCode)")
+
+        switch httpResponse.statusCode {
+        case 200:
+            return try self.parseUsageResponseWindows(data)
+        case 401, 403:
+            throw FetchError.unauthorized
+        default:
+            throw FetchError.serverError(statusCode: httpResponse.statusCode)
+        }
+    }
+
+    private static func fetchExtraUsageCost(
+        orgId: String,
+        sessionKey: String,
+        logger: ((String) -> Void)? = nil) async -> ProviderCostSnapshot?
+    {
+        let url = URL(string: "\(baseURL)/organizations/\(orgId)/overage_spend_limit")!
+        var request = URLRequest(url: url)
+        request.setValue("sessionKey=\(sessionKey)", forHTTPHeaderField: "Cookie")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpMethod = "GET"
+        request.timeoutInterval = 15
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else { return nil }
+            logger?("Overage API status: \(httpResponse.statusCode)")
+            guard httpResponse.statusCode == 200 else { return nil }
+            return Self.parseOverageSpendLimitWindows(data)
+        } catch {
+            return nil
+        }
+    }
+
+    private static func fetchAccountInfo(
+        sessionKey: String,
+        orgId: String?,
+        logger: ((String) -> Void)? = nil) async -> WebAccountInfo?
+    {
+        let url = URL(string: "\(baseURL)/account")!
+        var request = URLRequest(url: url)
+        request.setValue("sessionKey=\(sessionKey)", forHTTPHeaderField: "Cookie")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpMethod = "GET"
+        request.timeoutInterval = 15
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else { return nil }
+            logger?("Account API status: \(httpResponse.statusCode)")
+            guard httpResponse.statusCode == 200 else { return nil }
+            return Self.parseAccountInfoWindows(data, orgId: orgId)
+        } catch {
+            return nil
+        }
+    }
+
+    // MARK: - Windows JSON Parsing
+
+    private static func parseOrganizationResponseWindows(_ data: Data) throws -> OrganizationInfo {
+        struct OrgResponse: Decodable {
+            let uuid: String
+            let name: String?
+            let capabilities: [String]?
+        }
+        guard let organizations = try? JSONDecoder().decode([OrgResponse].self, from: data),
+              let first = organizations.first
+        else {
+            throw FetchError.invalidResponse
+        }
+        let name = first.name?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sanitized = (name?.isEmpty ?? true) ? nil : name
+        return OrganizationInfo(id: first.uuid, name: sanitized)
+    }
+
+    private static func parseUsageResponseWindows(_ data: Data) throws -> WebUsageData {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw FetchError.invalidResponse
+        }
+
+        var sessionPercent: Double?
+        var sessionResets: Date?
+        if let fiveHour = json["five_hour"] as? [String: Any] {
+            if let utilization = fiveHour["utilization"] as? Int {
+                sessionPercent = Double(utilization)
+            }
+            if let resetsAt = fiveHour["resets_at"] as? String {
+                sessionResets = Self.parseISO8601DateWindows(resetsAt)
+            }
+        }
+        guard let sessionPercent else {
+            throw FetchError.invalidResponse
+        }
+
+        var weeklyPercent: Double?
+        var weeklyResets: Date?
+        if let sevenDay = json["seven_day"] as? [String: Any] {
+            if let utilization = sevenDay["utilization"] as? Int {
+                weeklyPercent = Double(utilization)
+            }
+            if let resetsAt = sevenDay["resets_at"] as? String {
+                weeklyResets = Self.parseISO8601DateWindows(resetsAt)
+            }
+        }
+
+        var opusPercent: Double?
+        if let sevenDayOpus = json["seven_day_opus"] as? [String: Any] {
+            if let utilization = sevenDayOpus["utilization"] as? Int {
+                opusPercent = Double(utilization)
+            }
+        }
+
+        return WebUsageData(
+            sessionPercentUsed: sessionPercent,
+            sessionResetsAt: sessionResets,
+            weeklyPercentUsed: weeklyPercent,
+            weeklyResetsAt: weeklyResets,
+            opusPercentUsed: opusPercent,
+            extraUsageCost: nil,
+            accountOrganization: nil,
+            accountEmail: nil,
+            loginMethod: nil)
+    }
+
+    private static func parseISO8601DateWindows(_ string: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: string) {
+            return date
+        }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: string)
+    }
+
+    private struct OverageResponseWindows: Decodable {
+        let monthlyCreditLimit: Double?
+        let currency: String?
+        let usedCredits: Double?
+        let isEnabled: Bool?
+
+        enum CodingKeys: String, CodingKey {
+            case monthlyCreditLimit = "monthly_credit_limit"
+            case currency
+            case usedCredits = "used_credits"
+            case isEnabled = "is_enabled"
+        }
+    }
+
+    private static func parseOverageSpendLimitWindows(_ data: Data) -> ProviderCostSnapshot? {
+        guard let decoded = try? JSONDecoder().decode(OverageResponseWindows.self, from: data) else { return nil }
+        guard decoded.isEnabled == true else { return nil }
+        guard let used = decoded.usedCredits,
+              let limit = decoded.monthlyCreditLimit,
+              let currency = decoded.currency,
+              !currency.isEmpty else { return nil }
+
+        let usedAmount = used / 100.0
+        let limitAmount = limit / 100.0
+
+        return ProviderCostSnapshot(
+            used: usedAmount,
+            limit: limitAmount,
+            currencyCode: currency,
+            period: "Monthly",
+            resetsAt: nil,
+            updatedAt: Date())
+    }
+
+    private struct AccountResponseWindows: Decodable {
+        let emailAddress: String?
+        let memberships: [Membership]?
+
+        enum CodingKeys: String, CodingKey {
+            case emailAddress = "email_address"
+            case memberships
+        }
+
+        struct Membership: Decodable {
+            let organization: Organization
+
+            struct Organization: Decodable {
+                let uuid: String?
+                let rateLimitTier: String?
+                let billingType: String?
+
+                enum CodingKeys: String, CodingKey {
+                    case uuid
+                    case rateLimitTier = "rate_limit_tier"
+                    case billingType = "billing_type"
+                }
+            }
+        }
+    }
+
+    private static func parseAccountInfoWindows(_ data: Data, orgId: String?) -> WebAccountInfo? {
+        guard let response = try? JSONDecoder().decode(AccountResponseWindows.self, from: data) else { return nil }
+        let email = response.emailAddress?.trimmingCharacters(in: .whitespacesAndNewlines)
+        var membership: AccountResponseWindows.Membership?
+        if let memberships = response.memberships, !memberships.isEmpty {
+            if let orgId {
+                membership = memberships.first { $0.organization.uuid == orgId }
+            }
+            if membership == nil {
+                membership = memberships.first
+            }
+        }
+        let plan = inferPlanWindows(
+            rateLimitTier: membership?.organization.rateLimitTier,
+            billingType: membership?.organization.billingType)
+        return WebAccountInfo(email: email, loginMethod: plan)
+    }
+
+    private static func inferPlanWindows(rateLimitTier: String?, billingType: String?) -> String? {
+        let tier = rateLimitTier?.lowercased() ?? ""
+        let billing = billingType?.lowercased() ?? ""
+        if tier.contains("max") { return "Claude Max" }
+        if tier.contains("pro") { return "Claude Pro" }
+        if tier.contains("team") { return "Claude Team" }
+        if tier.contains("enterprise") { return "Claude Enterprise" }
+        if billing.contains("stripe"), tier.contains("claude") { return "Claude Pro" }
+        return nil
+    }
+
     #else
+
+    // MARK: - Other platforms (Linux, etc.)
 
     public static func fetchUsage(logger: ((String) -> Void)? = nil) async throws -> WebUsageData {
         throw FetchError.notSupportedOnThisPlatform
@@ -869,6 +1353,7 @@ public enum ClaudeWebAPIFetcher {
 
     public static func probeEndpoints(
         _ endpoints: [String],
+        browserDetection: BrowserDetection,
         includePreview: Bool = false,
         logger: ((String) -> Void)? = nil) async throws -> [ProbeResult]
     {
@@ -892,7 +1377,10 @@ public enum ClaudeWebAPIFetcher {
         return false
     }
 
-    public static func sessionKeyInfo(logger: ((String) -> Void)? = nil) throws -> SessionKeyInfo {
+    public static func sessionKeyInfo(
+        browserDetection: BrowserDetection,
+        logger: ((String) -> Void)? = nil) throws -> SessionKeyInfo
+    {
         throw FetchError.notSupportedOnThisPlatform
     }
 

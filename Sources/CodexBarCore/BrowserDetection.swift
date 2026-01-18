@@ -312,9 +312,78 @@ public final class BrowserDetection: Sendable {
     }
 }
 
+#elseif os(Windows)
+
+// MARK: - Windows implementation
+
+public final class BrowserDetection: Sendable {
+    public static let defaultCacheTTL: TimeInterval = 60 * 10
+
+    private let localAppData: String
+    private let fileManager: FileManager
+
+    public init(
+        homeDirectory: String = "",
+        cacheTTL: TimeInterval = BrowserDetection.defaultCacheTTL,
+        now: @escaping @Sendable () -> Date = Date.init,
+        fileExists: @escaping @Sendable (String) -> Bool = { path in FileManager.default.fileExists(atPath: path) },
+        directoryContents: @escaping @Sendable (String) -> [String]? = { path in
+            try? FileManager.default.contentsOfDirectory(atPath: path)
+        })
+    {
+        self.localAppData = ProcessInfo.processInfo.environment["LOCALAPPDATA"]
+            ?? "\(ProcessInfo.processInfo.environment["USERPROFILE"] ?? "C:\\Users\\Default")\\AppData\\Local"
+        self.fileManager = FileManager.default
+    }
+
+    public func isAppInstalled(_ browser: Browser) -> Bool {
+        guard let windowsBrowser = self.toWindowsBrowser(browser) else { return false }
+        let userDataPath = "\(localAppData)\\\(windowsBrowser.localAppDataPath)"
+        return fileManager.fileExists(atPath: userDataPath)
+    }
+
+    public func isCookieSourceAvailable(_ browser: Browser) -> Bool {
+        guard let windowsBrowser = self.toWindowsBrowser(browser) else { return false }
+        let userDataPath = "\(localAppData)\\\(windowsBrowser.localAppDataPath)"
+        guard fileManager.fileExists(atPath: userDataPath) else { return false }
+
+        // Check for Local State file (contains encryption key)
+        let localStatePath = "\(userDataPath)\\Local State"
+        guard fileManager.fileExists(atPath: localStatePath) else { return false }
+
+        // Check for at least one profile with cookies
+        let defaultCookies = "\(userDataPath)\\Default\\Network\\Cookies"
+        let defaultCookiesLegacy = "\(userDataPath)\\Default\\Cookies"
+        return fileManager.fileExists(atPath: defaultCookies) || fileManager.fileExists(atPath: defaultCookiesLegacy)
+    }
+
+    public func hasUsableProfileData(_ browser: Browser) -> Bool {
+        isAppInstalled(browser)
+    }
+
+    public func clearCache() {}
+
+    private func toWindowsBrowser(_ browser: Browser) -> WindowsBrowser? {
+        switch browser {
+        case .chrome: return .chrome
+        case .chromeBeta: return .chromeBeta
+        case .chromeCanary: return .chromeCanary
+        case .edge: return .edge
+        case .edgeBeta: return .edgeBeta
+        case .edgeCanary: return .edgeCanary
+        case .brave: return .brave
+        case .braveBeta: return .braveBeta
+        case .braveNightly: return .braveNightly
+        case .vivaldi: return .vivaldi
+        case .chromium: return .chromium
+        default: return nil  // Safari, Firefox, Arc, etc. not supported on Windows
+        }
+    }
+}
+
 #else
 
-// MARK: - Non-macOS stub
+// MARK: - Other platforms (Linux, etc.)
 
 public struct BrowserDetection: Sendable {
     public static let defaultCacheTTL: TimeInterval = 0
