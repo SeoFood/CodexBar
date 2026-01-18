@@ -1,5 +1,7 @@
 #if canImport(Darwin)
 import Darwin
+#elseif os(Windows)
+import WinSDK
 #else
 import Glibc
 #endif
@@ -74,11 +76,17 @@ public enum SubprocessRunner {
             throw SubprocessRunnerError.launchFailed(error.localizedDescription)
         }
 
+        #if os(Windows)
+        // Windows: Process groups are handled differently via Job Objects
+        // For now, we skip process group management on Windows
+        let processGroup: Int32? = nil
+        #else
         var processGroup: pid_t?
         let pid = process.processIdentifier
         if setpgid(pid, pid) == 0 {
             processGroup = pid
         }
+        #endif
 
         let exitCodeTask = Task<Int32, Never> {
             process.waitUntilExit()
@@ -110,18 +118,30 @@ public enum SubprocessRunner {
         } catch {
             if process.isRunning {
                 process.terminate()
+                #if !os(Windows)
                 if let pgid = processGroup {
                     kill(-pgid, SIGTERM)
                 }
+                #endif
                 let killDeadline = Date().addingTimeInterval(0.4)
                 while process.isRunning, Date() < killDeadline {
+                    #if os(Windows)
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                    #else
                     usleep(50000)
+                    #endif
                 }
                 if process.isRunning {
+                    #if os(Windows)
+                    // Windows: Process.terminate() should suffice
+                    // For forceful termination, we'd need TerminateProcess via WinSDK
+                    _ = processGroup // silence unused warning
+                    #else
                     if let pgid = processGroup {
                         kill(-pgid, SIGKILL)
                     }
                     kill(process.processIdentifier, SIGKILL)
+                    #endif
                 }
             }
             exitCodeTask.cancel()

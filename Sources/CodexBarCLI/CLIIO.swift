@@ -33,6 +33,8 @@ extension CodexBarCLI {
     static func platformExit(_ code: Int32) -> Never {
         #if canImport(Darwin)
         Darwin.exit(code)
+        #elseif os(Windows)
+        _exit(code)
         #else
         Glibc.exit(code)
         #endif

@@ -1,3 +1,128 @@
+#if os(Windows)
+import Foundation
+
+/// TTYCommandRunner is not available on Windows.
+/// Windows does not support Unix PTY (openpty, fcntl, etc.).
+/// Use HTTP-based provider strategies instead.
+public struct TTYCommandRunner {
+    public struct Result: Sendable {
+        public let text: String
+    }
+
+    public struct Options: Sendable {
+        public var rows: UInt16 = 50
+        public var cols: UInt16 = 160
+        public var timeout: TimeInterval = 20.0
+        public var idleTimeout: TimeInterval?
+        public var workingDirectory: URL?
+        public var extraArgs: [String] = []
+        public var initialDelay: TimeInterval = 0.4
+        public var sendEnterEvery: TimeInterval?
+        public var sendOnSubstrings: [String: String]
+        public var stopOnURL: Bool
+        public var stopOnSubstrings: [String]
+        public var settleAfterStop: TimeInterval
+
+        public init(
+            rows: UInt16 = 50,
+            cols: UInt16 = 160,
+            timeout: TimeInterval = 20.0,
+            idleTimeout: TimeInterval? = nil,
+            workingDirectory: URL? = nil,
+            extraArgs: [String] = [],
+            initialDelay: TimeInterval = 0.4,
+            sendEnterEvery: TimeInterval? = nil,
+            sendOnSubstrings: [String: String] = [:],
+            stopOnURL: Bool = false,
+            stopOnSubstrings: [String] = [],
+            settleAfterStop: TimeInterval = 0.25)
+        {
+            self.rows = rows
+            self.cols = cols
+            self.timeout = timeout
+            self.idleTimeout = idleTimeout
+            self.workingDirectory = workingDirectory
+            self.extraArgs = extraArgs
+            self.initialDelay = initialDelay
+            self.sendEnterEvery = sendEnterEvery
+            self.sendOnSubstrings = sendOnSubstrings
+            self.stopOnURL = stopOnURL
+            self.stopOnSubstrings = stopOnSubstrings
+            self.settleAfterStop = settleAfterStop
+        }
+    }
+
+    public enum Error: Swift.Error, LocalizedError, Sendable {
+        case binaryNotFound(String)
+        case launchFailed(String)
+        case timedOut
+        case notSupportedOnWindows
+
+        public var errorDescription: String? {
+            switch self {
+            case let .binaryNotFound(bin):
+                "Missing CLI '\(bin)'. Install it or add it to PATH."
+            case let .launchFailed(msg): "Failed to launch process: \(msg)"
+            case .timedOut: "PTY command timed out."
+            case .notSupportedOnWindows:
+                "TTY commands are not supported on Windows. Use HTTP-based provider APIs instead."
+            }
+        }
+    }
+
+    public init() {}
+
+    public func run(
+        binary: String,
+        send script: String,
+        options: Options = Options(),
+        onURLDetected: (@Sendable () -> Void)? = nil) throws -> Result
+    {
+        _ = (binary, script, options, onURLDetected)
+        throw Error.notSupportedOnWindows
+    }
+
+    public static func which(_ tool: String) -> String? {
+        if tool == "codex", let located = BinaryLocator.resolveCodexBinary() { return located }
+        if tool == "claude", let located = BinaryLocator.resolveClaudeBinary() { return located }
+        return nil
+    }
+
+    public static func enrichedPath() -> String {
+        PathBuilder.effectivePATH(
+            purposes: [.tty, .nodeTooling],
+            env: ProcessInfo.processInfo.environment)
+    }
+
+    static func enrichedEnvironment(
+        baseEnv: [String: String] = ProcessInfo.processInfo.environment,
+        loginPATH: [String]? = LoginShellPathCache.shared.current,
+        home: String = PlatformPaths.homeDirectory.path) -> [String: String]
+    {
+        var env = baseEnv
+        env["PATH"] = PathBuilder.effectivePATH(
+            purposes: [.tty, .nodeTooling],
+            env: baseEnv,
+            loginPATH: loginPATH,
+            home: home)
+        if env["USERPROFILE"]?.isEmpty ?? true {
+            env["USERPROFILE"] = home
+        }
+        if env["TERM"]?.isEmpty ?? true {
+            env["TERM"] = "xterm-256color"
+        }
+        if env["COLORTERM"]?.isEmpty ?? true {
+            env["COLORTERM"] = "truecolor"
+        }
+        if env["CI"] == nil {
+            env["CI"] = "0"
+        }
+        return env
+    }
+}
+
+#else
+// Unix implementation (macOS, Linux)
 #if canImport(Darwin)
 import Darwin
 #else
@@ -677,3 +802,4 @@ public struct TTYCommandRunner {
         return env
     }
 }
+#endif // os(Windows)

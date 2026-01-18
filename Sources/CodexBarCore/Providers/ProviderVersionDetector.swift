@@ -1,3 +1,10 @@
+#if canImport(Darwin)
+import Darwin
+#elseif os(Windows)
+import WinSDK
+#else
+import Glibc
+#endif
 import Foundation
 
 public enum ProviderVersionDetector {
@@ -44,17 +51,27 @@ public enum ProviderVersionDetector {
 
         let deadline = Date().addingTimeInterval(2.0)
         while proc.isRunning, Date() < deadline {
+            #if os(Windows)
+            Thread.sleep(forTimeInterval: 0.05)
+            #else
             usleep(50000)
+            #endif
         }
         if proc.isRunning {
             proc.terminate()
             let killDeadline = Date().addingTimeInterval(0.5)
             while proc.isRunning, Date() < killDeadline {
+                #if os(Windows)
+                Thread.sleep(forTimeInterval: 0.02)
+                #else
                 usleep(20000)
+                #endif
             }
+            #if !os(Windows)
             if proc.isRunning {
                 kill(proc.processIdentifier, SIGKILL)
             }
+            #endif
         }
 
         let data = out.fileHandleForReading.readDataToEndOfFile()

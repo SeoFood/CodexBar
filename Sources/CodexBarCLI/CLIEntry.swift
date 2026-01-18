@@ -5,6 +5,8 @@ import AppKit
 #endif
 #if canImport(Darwin)
 import Darwin
+#elseif os(Windows)
+import WinSDK
 #else
 import Glibc
 #endif

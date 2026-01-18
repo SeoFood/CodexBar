@@ -1,3 +1,45 @@
+#if os(Windows)
+import Foundation
+
+/// ClaudeCLISession is not available on Windows.
+/// Windows does not support Unix PTY (openpty, fcntl, etc.).
+actor ClaudeCLISession {
+    static let shared = ClaudeCLISession()
+
+    enum SessionError: LocalizedError {
+        case launchFailed(String)
+        case timedOut
+        case processExited
+        case notSupportedOnWindows
+
+        var errorDescription: String? {
+            switch self {
+            case let .launchFailed(msg): "Failed to launch Claude CLI session: \(msg)"
+            case .timedOut: "Claude CLI session timed out."
+            case .processExited: "Claude CLI session exited."
+            case .notSupportedOnWindows: "Claude CLI sessions are not supported on Windows."
+            }
+        }
+    }
+
+    func capture(
+        subcommand: String,
+        binary: String,
+        timeout: TimeInterval,
+        idleTimeout: TimeInterval? = 3.0,
+        stopOnSubstrings: [String] = [],
+        settleAfterStop: TimeInterval = 0.25,
+        sendEnterEvery: TimeInterval? = nil) async throws -> String
+    {
+        _ = (subcommand, binary, timeout, idleTimeout, stopOnSubstrings, settleAfterStop, sendEnterEvery)
+        throw SessionError.notSupportedOnWindows
+    }
+
+    func reset() {}
+}
+
+#else
+// Unix implementation (macOS, Linux)
 #if canImport(Darwin)
 import Darwin
 #else
@@ -296,3 +338,4 @@ actor ClaudeCLISession {
         try handle.write(contentsOf: data)
     }
 }
+#endif // os(Windows)
