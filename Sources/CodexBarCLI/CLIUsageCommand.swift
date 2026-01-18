@@ -94,13 +94,19 @@ extension CodexBarCLI {
             }
         }
 
-        #if !os(macOS)
+        // On non-macOS platforms, automatically fall back from web/auto to cli
+        // since browser cookie extraction is not available
+        #if os(macOS)
+        let effectiveSourceMode = parsedSourceMode
+        #else
+        let effectiveSourceMode: ProviderSourceMode?
         if parsedSourceMode?.usesWeb == true {
-            Self.exit(
-                code: .failure,
-                message: "Error: --source web/auto is only supported on macOS.",
-                output: output,
-                kind: .runtime)
+            effectiveSourceMode = .cli
+            if verbose {
+                Self.writeStderr("Note: --source \(parsedSourceMode?.rawValue ?? "auto") not available on Windows, using cli\n")
+            }
+        } else {
+            effectiveSourceMode = parsedSourceMode
         }
         #endif
 
@@ -123,7 +129,7 @@ extension CodexBarCLI {
         let command = UsageCommandContext(
             format: format,
             includeCredits: includeCredits,
-            sourceModeOverride: parsedSourceMode,
+            sourceModeOverride: effectiveSourceMode,
             antigravityPlanDebug: antigravityPlanDebug,
             augmentDebug: augmentDebug,
             webDebugDumpHTML: webDebugDumpHTML,
@@ -242,20 +248,21 @@ extension CodexBarCLI {
             provider: provider,
             account: account)
 
-        #if !os(macOS)
+        // On non-macOS, fall back to cli if web/auto is selected
+        #if os(macOS)
+        let resolvedSourceMode = effectiveSourceMode
+        #else
+        let resolvedSourceMode: ProviderSourceMode
         if effectiveSourceMode.usesWeb {
-            return Self.webSourceUnsupportedOutput(
-                provider: provider,
-                account: account,
-                source: effectiveSourceMode.rawValue,
-                status: status,
-                command: command)
+            resolvedSourceMode = .cli
+        } else {
+            resolvedSourceMode = effectiveSourceMode
         }
         #endif
 
         let fetchContext = ProviderFetchContext(
             runtime: .cli,
-            sourceMode: effectiveSourceMode,
+            sourceMode: resolvedSourceMode,
             includeCredits: command.includeCredits,
             webTimeout: command.webTimeout,
             webDebugDumpHTML: command.webDebugDumpHTML,
